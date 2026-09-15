@@ -1,0 +1,299 @@
+name: Tariff Notify
+# 汇总推送：钉钉 / 飞书 / 企业微信 / 邮件（配哪个推哪个）
+#
+# ══ 重点省份与推送模式统一在本文件配置（不再散落到各抓取 workflow）══
+#
+# 仓库变量（Settings → Secrets and variables → Actions → Variables）：
+#   FOCUS_PROVS   重点省份，3 个，拼音逗号分隔
+#                 例：hunan,guangdong,zhejiang
+#                 四家通用；每项都自动附带「全国」，即每家抓 4 个板块。
+#   NOTIFY_MODE   推送模式（定时触发时生效）：
+#     full_auto     (a) 定时全量推送——当日抓取范围为全量，到点推送
+#     focus_auto    (b) 定时重点省份推送——当日抓取范围为 3 省+全国，到点推送
+#     focus_manual  (c) 不自动推送——等手动点「手动推送(重点省)」才跑
+#   SCRAPE_MODE   抓取范围，需与 NOTIFY_MODE 保持一致：
+#     (a) → full    (b)(c) → focus
+#     它决定三个抓取 workflow（08:47/09:17/09:37）每天抓多少省份
+#
+# 手动触发（Actions → 本 workflow → Run workflow）可临时覆盖：
+#   手动推送(重点省)  ← 点一下就只跑重点省份并推送（对应需求 1、4）
+#   仅推送            ← 不抓取，直接推当前已有数据
+#   全量推送          ← 抓全部省份后推送
+#
+# 注：电信源站仅公开 quanguo 与 hunan 两个板块（其余省 h5 受瑞数 WAF
+#     拦截、provCode 无公开口径），故模式对电信无实际影响，它始终抓
+#     这两个板块；这不影响其余三家的重点省份设置。
+
+on:
+  schedule:
+    # focus 模式下各家耗时：移动 ~4 分 / 电信广电 ~5 分 / 联通 ~7 分，
+    # 三家在本 workflow 内顺序跑约 20 分钟，10:00 与 20:00 推送前有足够余量。
+    - cron: "0 2 * * *"      # 北京 10:00
+    - cron: "0 12 * * *"     # 北京 20:00
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "推送方式"
+        type: choice
+        options:
+          - "手动推送(重点省)"
+          - "仅推送"
+          - "全量推送"
+        default: "手动推送(重点省)"
+      focus_provs:
+        description: "重点省份（3 个，拼音逗号分隔；留空用仓库变量 FOCUS_PROVS）"
+        type: string
+        default: ""
+      hours:
+        description: "统计最近 N 小时"
+        default: "24"
+
+permissions:
+  contents: write    # 抓取后需要提交数据
+
+# 去重：同一时刻只允许一个 Tariff Notify 运行。
+# 之前手动触发时脚本把 204 误判为失败并重试 10 次，导致连发 10 条钉钉。
+# concurrency 让新任务排队等旧的跑完，而不是并发跑多个
+#（并发会让多个 notify 同时读到同一份 history，推送内容重复）。
+concurrency:
+  group: tariff-notify
+  cancel-in-progress: false
+
+jobs:
+  # ══════════ 抓取（仅「手动推送」/「全量推送」/定时自动模式）══════════
+  fetch:
+    # 只在手动触发且选了「手动推送(重点省)」/「全量推送」时才抓取。
+    # 定时触发不抓取：当日的抓取由三个抓取 workflow 在 08:47/09:17/09:37
+    # 完成（范围由 SCRAPE_MODE 决定），本 workflow 定时只负责推送，
+    # 避免同一天重复抓两遍。
+    if: >-
+      github.event_name == 'workflow_dispatch' && (
+        contains(github.event.inputs.action, '重点省') ||
+        contains(github.event.inputs.action, '全量')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install pycryptodome
+
+      - name: 恢复降级峰值缓存（移动）
+        uses: actions/cache@v4
+        with:
+          path: pipelines/mobile/snapshots/peaks.json
+          key: mobile-peaks-v1
+          restore-keys: |
+            mobile-peaks-
+
+      - name: 解析模式与重点省份
+        id: cfg
+        run: |
+          ACTION="${{ github.event.inputs.action }}"
+          # 模式：手动「全量推送」或定时 full_auto → full；否则 focus
+          if [ -n "$ACTION" ]; then
+            case "$ACTION" in
+              *全量*) MODE="full" ;;
+              *)      MODE="focus" ;;
+            esac
+          else
+            case "${{ vars.NOTIFY_MODE }}" in
+              full_auto) MODE="full" ;;
+              *)         MODE="focus" ;;
+            esac
+          fi
+          FOCUS="${{ github.event.inputs.focus_provs }}"
+          [ -n "$FOCUS" ] || FOCUS="${{ vars.FOCUS_PROVS }}"
+          [ -n "$FOCUS" ] || FOCUS="hunan,guangdong,zhejiang"
+          echo "mode=$MODE"        >> "$GITHUB_OUTPUT"
+          echo "focus=$FOCUS"      >> "$GITHUB_OUTPUT"
+          echo "模式=$MODE  重点省=$FOCUS"
+
+      # ── 移动 ──
+      - name: 抓取移动（3省+全国 或 全量）
+        run: |
+          set -e
+          cd pipelines/mobile
+          if [ "${{ steps.cfg.outputs.mode }}" = "focus" ]; then
+            export TRACK_PROVINCES="${{ steps.cfg.outputs.focus }}"
+          else
+            unset TRACK_PROVINCES
+          fi
+          echo "=== 移动抓取开始 $(date -u +%FT%TZ) ==="
+          set +e
+          python3 -u main.py --once 2>&1 | tail -60
+          echo "移动抓取 exit=${PIPESTATUS[0]}"
+          set -e
+
+      - name: 构建移动站点数据
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          rm -rf snapshots
+          cp -r pipelines/mobile/snapshots ./snapshots 2>/dev/null || true
+          N=$(find snapshots -maxdepth 1 -type f -name "*.json" ! -name "peaks.json" | wc -l)
+          echo "移动快照文件数: $N"
+          if [ "$N" -eq 0 ]; then
+            echo "::warning::移动本轮无快照，保留现有 data/"
+            rm -rf snapshots
+            exit 0
+          fi
+          rm -rf _prev && mkdir -p _prev
+          cp -f data/*.json _prev/ 2>/dev/null || true
+          python3 pipelines/scripts/announce_fetch.py --move-dir site/data || true
+          python3 scripts/build_site.py 2>&1 | tail -30
+          QT=$(python3 -c "import json;print(json.load(open('_site/data/latest.json')).get('quanguo_total',0))" 2>/dev/null || echo 0)
+          echo "新构建 quanguo_total=$QT"
+          if [ "$QT" = "0" ]; then
+            echo "::warning::构建结果为 0，放弃覆盖 data/"
+            python3 scripts/rebuild_latest.py
+            rm -rf _site
+            exit 0
+          fi
+          mkdir -p data
+          cp -f _site/data/*.json data/ 2>/dev/null || true
+          rm -f data/peaks.json
+          rm -rf _site _prev snapshots
+
+      # ── 联通 ──
+      - name: 抓取联通
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          SCOPE=""
+          if [ "${{ steps.cfg.outputs.mode }}" = "focus" ]; then
+            SCOPE="--scopes quanguo,${{ steps.cfg.outputs.focus }}"
+          fi
+          echo "=== 联通抓取开始 $(date -u +%FT%TZ) ==="
+          set +e
+          python3 -u pipelines/unicom_pipeline.py \
+            --prev-dir unicom/data --out-dir unicom/data $SCOPE 2>&1 | tail -40
+          echo "联通 exit=${PIPESTATUS[0]}"
+          set -e
+
+      # ── 电信 + 广电 ──
+      - name: 抓取电信与广电
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          GBSCOPE=""
+          if [ "${{ steps.cfg.outputs.mode }}" = "focus" ]; then
+            GBSCOPE="--scopes quanguo,${{ steps.cfg.outputs.focus }}"
+          fi
+          set +e
+          echo "--- 电信（源站仅公开 全网+湖南，模式对其无效）---"
+          PYTHONPATH=pipelines python3 -u pipelines/telecom_pipeline.py \
+            --prev-dir telecom/data --out-dir telecom/data 2>&1 | tail -30
+          echo "--- 广电 ---"
+          PYTHONPATH=pipelines python3 -u pipelines/gb_pipeline.py \
+            --prev-dir gb/data --out-dir gb/data $GBSCOPE 2>&1 | tail -30
+          set -e
+
+      - name: 提交抓取结果
+        if: always()
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          # 备份产物（防止被远程新提交冲掉）
+          rm -rf /tmp/art && mkdir -p /tmp/art
+          cp -a data    /tmp/art/ 2>/dev/null || true
+          cp -a unicom  /tmp/art/ 2>/dev/null || true
+          cp -a telecom /tmp/art/ 2>/dev/null || true
+          cp -a gb      /tmp/art/ 2>/dev/null || true
+          git fetch origin main || true
+          git reset --hard FETCH_HEAD || true
+          # 原子恢复：先确认产物存在，再覆盖，避免把「目录消失」提交上去
+          for d in data unicom telecom gb; do
+            if [ -d "/tmp/art/$d" ]; then
+              rm -rf "$d"
+              cp -a "/tmp/art/$d" "./$d"
+            fi
+          done
+          git config user.name "tariff-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "无变化"
+          else
+            git commit -q -m "notify fetch+push $(date -u +%FT%TZ)"
+            PUSHED=0
+            for i in 1 2 3 4 5; do
+              if git push origin main; then echo "已推送"; PUSHED=1; break; fi
+              echo "[warn] push 失败，重新对齐后重试 ($i/5)"
+              git fetch origin main
+              git reset --hard FETCH_HEAD
+              for d in data unicom telecom gb; do
+                [ -d "/tmp/art/$d" ] && { rm -rf "$d"; cp -a "/tmp/art/$d" "./$d"; }
+              done
+              git add -A
+              git commit -q -m "notify fetch+push retry$i $(date -u +%FT%TZ)" || true
+              sleep 8
+            done
+            if [ "$PUSHED" -ne 1 ]; then
+              echo "::error::连续5次 git push 均失败"
+              exit 1
+            fi
+          fi
+
+  # ══════════ 推送 ══════════
+  notify:
+    needs: fetch
+    # fetch 被跳过或失败时也照常推送（推当前已有数据）
+    if: >-
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'schedule' && vars.NOTIFY_MODE != 'focus_manual')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # 必须显式 checkout main 最新：默认的 checkout 拉的是「触发本工作流的
+      # 那个 commit」，而 fetch job 之后又提交了新的抓取结果。不拉最新的话
+      # notify 读到的是抓取前的旧 history —— 这就是钉钉内容与网站不一致的
+      # 根因（钉钉说有变化、网站上已经没有了）。
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 推送汇总（多通道）
+        env:
+          # ── 通道开关说明 ──
+          # 定时触发（10:00/20:00）：推全部已配置通道（钉钉/飞书/企微/邮件）。
+          # 站长手动触发（workflow_dispatch，即「我让你推送」）：只推站长自己的
+          # 钉钉；飞书/企微/邮件置空后 notify.py 会自动跳过，避免打扰网页访客。
+          # 注：网页访客在 push-center.html 里的配置只存在各自浏览器 localStorage，
+          #     由访客浏览器直连官方接口推送，与本 workflow 无关（见 push-center.html）。
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET:  ${{ secrets.DINGTALK_SECRET }}
+          # 飞书（仅定时推送；手动触发置空跳过）
+          FEISHU_WEBHOOK:   ${{ github.event_name == 'workflow_dispatch' && '' || secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET:    ${{ github.event_name == 'workflow_dispatch' && '' || secrets.FEISHU_SECRET }}
+          # 企业微信机器人（仅定时推送；手动触发置空跳过）
+          WECOM_WEBHOOK:    ${{ github.event_name == 'workflow_dispatch' && '' || secrets.WECOM_WEBHOOK }}
+          # 邮件（仅定时推送；手动触发置空跳过）
+          SMTP_HOST:        ${{ github.event_name == 'workflow_dispatch' && '' || secrets.SMTP_HOST }}
+          SMTP_PORT:        ${{ github.event_name == 'workflow_dispatch' && '' || secrets.SMTP_PORT }}
+          SMTP_USER:        ${{ github.event_name == 'workflow_dispatch' && '' || secrets.SMTP_USER }}
+          SMTP_PASS:        ${{ github.event_name == 'workflow_dispatch' && '' || secrets.SMTP_PASS }}
+          MAIL_TO:          ${{ github.event_name == 'workflow_dispatch' && '' || secrets.MAIL_TO }}
+          MAIL_FROM:        ${{ github.event_name == 'workflow_dispatch' && '' || secrets.MAIL_FROM }}
+          MAIL_FROM_NAME:   ${{ github.event_name == 'workflow_dispatch' && '' || secrets.MAIL_FROM_NAME }}
+          # 通用
+          SINCE_HOURS:      ${{ github.event.inputs.hours || '24' }}
+          # 仓库未配置 vars 时这里会是空串，必须给默认值
+          # （脚本里也做了显式回退，双保险）
+          # 注意：FOCUS_SEC 已不再用于「筛选推送哪些省」——推送一律列全部
+          # 有变化的省，与网站变化历史同源同口径。此变量仅为兼容旧配置保留。
+          FOCUS_SEC:        ${{ vars.FOCUS_SEC || '' }}
+          SITE_URL:         ${{ vars.SITE_URL || 'https://woshiyigemanhuajia.github.io/hunan-tariff-site/' }}
+          SITE_ROOT:        "."
+        run: python3 scripts/dingtalk_summary.py
