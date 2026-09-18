@@ -12,7 +12,7 @@ name: Tariff Notify
 #     focus_auto    (b) 定时重点省份推送——当日抓取范围为 3 省+全国，到点推送
 #     focus_manual  (c) 不自动推送——等手动点「手动推送(重点省)」才跑
 #   SCRAPE_MODE   抓取范围，需与 NOTIFY_MODE 保持一致：
-#     (a) → full    (b)(c) → focus
+#     (a) → full    (b)(c) → focus# (a) → 完整 (b)(c) → 重点
 #     它决定三个抓取 workflow（08:47/09:17/09:37）每天抓多少省份
 #
 # 手动触发（Actions → 本 workflow → Run workflow）可临时覆盖：
@@ -288,12 +288,12 @@ jobs:
           MAIL_FROM:        ${{ github.event_name == 'workflow_dispatch' && '' || secrets.MAIL_FROM }}
           MAIL_FROM_NAME:   ${{ github.event_name == 'workflow_dispatch' && '' || secrets.MAIL_FROM_NAME }}
           # 通用
-          SINCE_HOURS:      ${{ github.event.inputs.hours || '24' }}
+          SINCE_HOURS自小时数:      ${{ github.event.inputs.hours || '24' }}
           # 仓库未配置 vars 时这里会是空串，必须给默认值
           # （脚本里也做了显式回退，双保险）
           # 注意：FOCUS_SEC 已不再用于「筛选推送哪些省」——推送一律列全部
           # 有变化的省，与网站变化历史同源同口径。此变量仅为兼容旧配置保留。
-          FOCUS_SEC:        ${{ vars.FOCUS_SEC || '' }}
+          FOCUS_SEC焦点_秒:        ${{ vars.FOCUS_SEC || '' }}
           SITE_URL:         ${{ vars.SITE_URL || 'https://woshiyigemanhuajia.github.io/hunan-tariff-site/' }}
           SITE_ROOT:        "."
-        run: python3 scripts/dingtalk_summary.py
+        run运行: python3 scripts/dingtalk_detail.py运行: python3 scripts/dingtalk_detail.py运行: 运运行python3 scripts/dingtalk_detail.py: 运行python3 scripts/dingtalk_detail.py: p执行python3 scripts/dingtalk_detail.py: ppython3 scripts/dingtalk_detail.py运行: 运运行python3 scripts/dingtalk_detail.py: 运行ppython3 scripts/dingtalk_detail.py: python3 scripts/dingtalk_detail.py
