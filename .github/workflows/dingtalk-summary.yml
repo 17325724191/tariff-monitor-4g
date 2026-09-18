@@ -1,4 +1,4 @@
-name: Tariff Notify
+name: Tariff Notify名称: 关税通知
 # 汇总推送：钉钉 / 飞书 / 企业微信 / 邮件（配哪个推哪个）
 #
 # ══ 重点省份与推送模式统一在本文件配置（不再散落到各抓取 workflow）══
@@ -12,7 +12,7 @@ name: Tariff Notify
 #     focus_auto    (b) 定时重点省份推送——当日抓取范围为 3 省+全国，到点推送
 #     focus_manual  (c) 不自动推送——等手动点「手动推送(重点省)」才跑
 #   SCRAPE_MODE   抓取范围，需与 NOTIFY_MODE 保持一致：
-#     (a) → full    (b)(c) → focus# (a) → 完整 (b)(c) → 重点
+#     (a) → full    (b)(c) → focus# (a) → 完整 (b)(c) → 重点# (a) → 全部 (b)(c) → 重点# (a) → 完整 (b)(c) → 重点# (a) → 全部 (b)(c) → 重点# (a) → 完整 (b)(c) → 重点# (a) → 全部 (b)(c) → 重点# (a) → 完整 (b)(c) → 重点
 #     它决定三个抓取 workflow（08:47/09:17/09:37）每天抓多少省份
 #
 # 手动触发（Actions → 本 workflow → Run workflow）可临时覆盖：
@@ -33,15 +33,15 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "推送方式"
-        type: choice
-        options:
+        description: "推送方式"描述: "推送方式"
+        type: choice类型: 选项
+        options:选项:
           - "手动推送(重点省)"
           - "仅推送"
           - "全量推送"
-        default: "手动推送(重点省)"
+        default: "手动推送(重点省)"默认: "手动推送（重点省）"
       focus_provs:
-        description: "重点省份（3 个，拼音逗号分隔；留空用仓库变量 FOCUS_PROVS）"
+        description: "重点省份（3 个，拼音逗号分隔；留空用仓库变量 FOCUS_PROVS）"描述: "重点省份（3 个，拼音逗号分隔；留空用仓库变量 FOCUS_PROVS）"
         type: string
         default: ""
       hours:
@@ -248,8 +248,8 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && vars.NOTIFY_MODE != 'focus_manual')
       )
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-latest运行环境: ubuntu-latest
+    timeout-minutes: 10超时分钟数: 10
     steps:
       # 必须显式 checkout main 最新：默认的 checkout 拉的是「触发本工作流的
       # 那个 commit」，而 fetch job 之后又提交了新的抓取结果。不拉最新的话
@@ -257,11 +257,11 @@ jobs:
       # 根因（钉钉说有变化、网站上已经没有了）。
       - uses: actions/checkout@v4
         with:
-          ref: main
-          fetch-depth: 1
+          ref: main引用: 主分支
+          fetch-depth: 1获取深度: 1
 
       - uses: actions/setup-python@v5
-        with:
+        with:与:
           python-version: '3.11'
 
       - name: 推送汇总（多通道）
@@ -296,4 +296,4 @@ jobs:
           FOCUS_SEC焦点_秒:        ${{ vars.FOCUS_SEC || '' }}
           SITE_URL:         ${{ vars.SITE_URL || 'https://woshiyigemanhuajia.github.io/hunan-tariff-site/' }}
           SITE_ROOT:        "."
-        run运行: python3 scripts/dingtalk_detail.py运行: python3 scripts/dingtalk_detail.py运行: 运运行python3 scripts/dingtalk_detail.py: 运行python3 scripts/dingtalk_detail.py: p执行python3 scripts/dingtalk_detail.py: ppython3 scripts/dingtalk_detail.py运行: 运运行python3 scripts/dingtalk_detail.py: 运行ppython3 scripts/dingtalk_detail.py: python3 scripts/dingtalk_detail.py
+        run运行: python3 scripts/dingtalk_detail.py
